@@ -1,64 +1,84 @@
-
 const express = require('express');
 const path = require('path');
+const { Pool } = require('pg');
 
 const app = express();
-
 app.use(express.json());
 
-// عرض صفحة التطبيق
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+});
+
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// تخزين المهام مؤقتاً
-let tasks = [];
-
 // عرض المهام
-app.get('/tasks', (req, res) => {
-    res.json(tasks);
+app.get('/tasks', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'SELECT * FROM tasks ORDER BY id'
+        );
+        res.json(result.rows);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error' });
+    }
 });
 
 // إضافة مهمة
-app.post('/tasks', (req, res) => {
-    const task = {
-        id: Date.now(),
-        title: req.body.title,
-        done: false
-    };
-
-    tasks.push(task);
-    res.status(201).json(task);
+app.post('/tasks', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'INSERT INTO tasks (title) VALUES ($1) RETURNING *',
+            [req.body.title]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error' });
+    }
 });
 
 // تعديل مهمة
-app.put('/tasks/:id', (req, res) => {
-    const id = Number(req.params.id);
-    const task = tasks.find(t => t.id === id);
-
-    if (!task) {
-        return res.status(404).json({
-            message: 'Task not found'
-        });
+app.put('/tasks/:id', async (req, res) => {
+    try {
+        const result = await pool.query(
+            'UPDATE tasks SET title = COALESCE($1, title), done = COALESCE($2, done) WHERE id = $3 RETURNING *',
+            [req.body.title ?? null, req.body.done ?? null, req.params.id]
+        );
+        res.json(result.rows[0]);
+    } catch (err) {
+        res.status(500).json({ error: 'Database error' });
     }
-
-    task.title = req.body.title ?? task.title;
-    task.done = req.body.done ?? task.done;
-
-    res.json(task);
 });
 
 // حذف مهمة
-app.delete('/tasks/:id', (req, res) => {
-    const id = Number(req.params.id);
-    tasks = tasks.filter(t => t.id !== id);
-
-    res.json({ message: 'Task deleted' });
+app.delete('/tasks/:id', async (req, res) => {
+    try {
+        await pool.query('DELETE FROM tasks WHERE id = $1', [req.params.id]);
+        res.json({ message: 'Task deleted' });
+    } catch (err) {
+        res.status(500).json({ error: 'Database error' });
+    }
 });
 
-// تشغيل السيرفر
-const PORT = process.env.PORT || 3000;
+// إنشاء جدول المهام وتشغيل السيرفر
+async function startServer() {
+    await pool.query(
+        CREATE TABLE IF NOT EXISTS tasks (
+            id SERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            done BOOLEAN DEFAULT FALSE
+        )
+    );
 
-app.listen(PORT, () => {
-    console.log("Server running on port " + PORT);
+    const PORT = process.env.PORT || 3000;
+    app.listen(PORT, () => {
+        console.log('Server running on port ' + PORT);
+    });
+}
+
+startServer().catch(err => {
+    console.error(err);
+    process.exit(1);
 });
